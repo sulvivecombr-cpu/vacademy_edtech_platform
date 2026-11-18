@@ -1,0 +1,19 @@
+import { Plugin } from 'vite';
+/**
+ * Vite plugin for @spatius/avatarkit
+ * Automatically handles WASM file configuration for development and production builds
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from 'vite'
+ * import { avatarkitVitePlugin } from '@spatius/avatarkit/vite'
+ *
+ * export default defineConfig({
+ *   plugins: [
+ *     avatarkitVitePlugin()
+ *   ]
+ * })
+ * ```
+ */
+export declare function avatarkitVitePlugin(): Plugin;
+export default avatarkitVitePlugin;

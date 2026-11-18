@@ -1,0 +1,281 @@
+import { CameraConfig } from '../types';
+import { Avatar } from './Avatar';
+import { AvatarController } from './AvatarController';
+export declare class AvatarView {
+    private readonly avatarController;
+    private readonly avatar;
+    onFirstRendering?: () => void;
+    private canvas;
+    private renderSystem;
+    private isInitialized;
+    private cameraConfig;
+    private renderLoopId;
+    private resizeObserver;
+    private onWindowResize;
+    private onVisibilityChange;
+    private frameCount;
+    private lastFpsUpdate;
+    private currentFPS;
+    private currentFrame;
+    private cachedIdleFirstFrame;
+    private characterHandle;
+    private characterId;
+    private transitionFrames;
+    private isConversationActive;
+    private lastRenderedFrameIndex;
+    private animationHandleMap;
+    private activeAnimationState;
+    private isPureRenderingMode;
+    private _renderingEnabled;
+    /**
+     * Constructor
+     * Creates a unified AvatarController, internally composes network layer based on configuration
+     * @param avatar - Avatar instance
+     * @param container - Canvas container element (required)
+     */
+    constructor(avatar: Avatar, container: HTMLElement);
+    /**
+     * Get controller (public interface)
+     */
+    get controller(): AvatarController;
+    /**
+     * Current native render surface size in pixels (canvas backing buffer
+     * size, post-DPR).
+     *
+     * Differs from the canvas CSS size (`offsetWidth / offsetHeight`): this
+     * reflects the actual pixel buffer the WebGPU renderer is targeting after
+     * the most recent resize has been applied.
+     *
+     * Returns `{ width: 0, height: 0 }` before the canvas has been initialized.
+     */
+    get renderSize(): {
+        width: number;
+        height: number;
+    };
+    /**
+     * Set once the first-frame callback has fired; the render loop samples the
+     * canvas on the first frame after this deadline and then clears it.
+     *
+     * The check exists because "the render loop is running" does not mean anything
+     * reached the screen. Failures along the render path mostly log and return, so
+     * a user seeing nothing produces no signal at all. This asks the only question
+     * that matters at the end: did this layer draw anything?
+     *
+     * Sampling has to happen inside the loop, right after renderFrame() — the
+     * context runs with preserveDrawingBuffer:false, so the buffer is only valid
+     * there. Reading from a timer would find it already cleared and report every
+     * healthy session as blank.
+     */
+    private _blankCheckDueAt;
+    private _blankCheckDone;
+    /** How long after the first frame to sample. Long enough for the pipeline to settle. */
+    private static readonly BLANK_CHECK_DELAY_MS;
+    /**
+     * Sample size. The browser scales the full canvas into this, so it covers the
+     * whole frame rather than a crop — the avatar is found wherever it sits. Kept
+     * tiny because the question is only "any opaque pixel at all"; reading the
+     * full canvas would copy megabytes for a yes/no answer.
+     */
+    private static readonly BLANK_CHECK_WIDTH;
+    private static readonly BLANK_CHECK_HEIGHT;
+    private scheduleBlankCanvasCheck;
+    /**
+     * Called from the render loop immediately after renderFrame(), while the
+     * drawing buffer is still valid.
+     */
+    private runBlankCanvasCheckIfDue;
+    /**
+     * Count pixels that are not fully transparent. Null when the sample could not
+     * be taken at all, which is not the same as a blank frame and must not be
+     * reported as one.
+     */
+    private countOpaquePixels;
+    private _exportBitmapResolve;
+    /**
+     * Exports the current rendering as a Blob (PNG).
+     * Returns null if the canvas is not initialized or not rendering.
+     * Aligned with iOS exportBitmap() / Android exportBitmap().
+     *
+     * The capture happens synchronously inside the render loop (after renderFrame)
+     * to work correctly with WebGL preserveDrawingBuffer:false.
+     */
+    exportBitmap(): Promise<Blob | null>;
+    /** @deprecated Use startRenderLoop() */
+    private startIdleAnimationLoop;
+    /**
+     * Render a specific idle frame by index for benchmark capture.
+     * Bypasses animation loop and _renderingEnabled check.
+     */
+    renderIdleFrameForBenchmark(frameIndex: number): Promise<void>;
+    /**
+     * Render a single frame from FlameParams for benchmark capture (transition / speaking).
+     * Bypasses animation loop and _renderingEnabled check.
+     */
+    renderFrameForBenchmark(flameParams: import('../wasm/avatarCoreAdapter').FlameParams): Promise<void>;
+    /**
+     * Cleanup view resources
+     * Closes avatarController and cleans up all related resources
+     */
+    dispose(): void;
+    /**
+     * 获取相机配置
+     */
+    getCameraConfig(): CameraConfig | null;
+    /**
+     * 更新相机配置
+     */
+    updateCameraConfig(cameraConfig: CameraConfig): void;
+    /**
+     * Render a single animation frame from raw protobuf data.
+     *
+     * Decodes the protobuf Message internally and renders the first keyframe.
+     * This is the preferred method for RTC consumers that receive raw animation bytes.
+     *
+     * @param data - Raw protobuf bytes (a single Message containing ServerResponseAnimation)
+     */
+    renderFromProtobuf(data: ArrayBuffer | Uint8Array): Promise<void>;
+    /**
+     * Play a transition from idle to the target frame in the protobuf data,
+     * then resolve when the transition is complete.
+     *
+     * The transition frames are generated and played internally at 25fps.
+     * The caller should wait for the returned Promise before pushing streaming frames.
+     *
+     * @param data - Raw protobuf bytes containing the target frame
+     * @param frameCount - Number of transition frames to generate
+     * @returns Promise that resolves when the transition playback finishes
+     */
+    playTransitionFromProtobuf(data: ArrayBuffer | Uint8Array, frameCount: number): Promise<void>;
+    /**
+     * Play a transition from current animation back to idle,
+     * then start the idle animation loop.
+     *
+     * Generates reverse transition frames from idle→lastFrame, reverses them,
+     * plays at 25fps, then starts idle.
+     *
+     * @param data - Raw protobuf bytes containing the last animation frame
+     * @param frameCount - Number of transition frames to generate
+     * @returns Promise that resolves when idle animation starts
+     */
+    playTransitionToIdleFromProtobuf(data: ArrayBuffer | Uint8Array, frameCount: number): Promise<void>;
+    /**
+     * Start idle animation (stop pure rendering mode, resume idle loop).
+     */
+    startIdle(): void;
+    /**
+     * Generate transition frames from protobuf data.
+     *
+     * Decodes the protobuf, extracts the target keyframe, and generates
+     * transition frames from the current idle position to the target.
+     * The caller is responsible for playing the returned frames at the desired cadence.
+     *
+     * @param data - Raw protobuf bytes containing the target frame
+     * @param frameCount - Number of transition frames to generate
+     * @param options - Additional options
+     * @param options.useLinear - Use linear interpolation (default: true)
+     * @returns Array of opaque keyframe data for sequential playback
+     */
+    generateTransitionToFrame(data: ArrayBuffer | Uint8Array, frameCount: number, options?: {
+        useLinear?: boolean;
+    }): Promise<unknown[]>;
+    /**
+     * RTC mode: generate `frameCount` interpolated frames from the most recently
+     * rendered frame back to the idle loop start. Caller plays them at 25fps
+     * via `renderFrame`, then hands control back with
+     * `renderFrame(undefined, true)`. Used for speaking → idle and disconnect
+     * soft transitions.
+     */
+    generateTransitionToIdle(frameCount: number, options?: {
+        useLinear?: boolean;
+    }): Promise<unknown[]>;
+    /**
+     * Cancel any in-progress frame sequence playback.
+     * Called by renderFromProtobuf when streaming frames arrive during transition.
+     */
+    cancelFrameSequence(): void;
+    /** 计算 canvas backing-store 像素尺寸. 默认 css × dpr;
+     *  AvatarSDK.setRenderResolutionCap 启用且高度超过阈值时,
+     *  按比例缩到阈值, css 尺寸不变 (浏览器自动拉伸). */
+    private computeCappedBacking;
+    /** Registry hook: AvatarSDK.setRenderResolutionCap 调用时重算 backing size. */
+    applyResolutionCapFromSdk(): void;
+    /**
+     * Pause rendering loop
+     *
+     * When called:
+     * - Rendering loop stops (no GPU/canvas updates)
+     * - Audio playback continues normally
+     * - Animation state machine continues running
+     *
+     * Use `resumeRendering()` to resume rendering.
+     *
+     * @example
+     * // Stop rendering to save GPU resources (audio continues)
+     * avatarView.pauseRendering()
+     */
+    pauseRendering(): void;
+    /**
+     * Resume rendering loop
+     *
+     * When called:
+     * - Rendering loop resumes from current state
+     * - If in Idle state, immediately renders current frame to restore display
+     *
+     * @example
+     * // Resume rendering
+     * avatarView.resumeRendering()
+     */
+    resumeRendering(): void;
+    /**
+     * Check if rendering is currently enabled
+     * @returns true if rendering is enabled, false if paused
+     */
+    isRenderingEnabled(): boolean;
+    /**
+     * Get or set avatar transform in canvas
+     *
+     * @example
+     * // Get current transform
+     * const current = avatarView.avatarTransform
+     *
+     * // Set transform
+     * avatarView.avatarTransform = { x: 0.5, y: 0, scale: 2.0 }
+     */
+    get avatarTransform(): {
+        x: number;
+        y: number;
+        scale: number;
+    };
+    set avatarTransform(value: {
+        x: number;
+        y: number;
+        scale: number;
+    });
+    /**
+     * Get the approximate bounding rectangle of the avatar in canvas pixel coordinates.
+     * Projects idle first frame positions through current view/projection matrices and transform.
+     * No caching is performed — each call recomputes from scratch.
+     *
+     * **Important:** The result depends on the current canvas size and `avatarTransform`.
+     * You must call this method again after any of the following changes to get an up-to-date result:
+     * - Canvas / container size changes (e.g. window resize)
+     * - `avatarTransform` changes (offset or scale)
+     *
+     * **Performance note:** Each call iterates ~70k splat points. Avoid calling every frame;
+     * call on-demand (e.g. after init, on resize, after transform change).
+     *
+     * @returns Bounding rectangle { x, y, width, height } in CSS pixels (top-left origin), or null if not ready
+     *
+     * @example
+     * const rect = avatarView.getBoundingRect()
+     * if (rect) {
+     *   console.log(`Avatar at (${rect.x}, ${rect.y}), size ${rect.width}x${rect.height}`)
+     * }
+     */
+    getBoundingRect(): {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    } | null;
+}

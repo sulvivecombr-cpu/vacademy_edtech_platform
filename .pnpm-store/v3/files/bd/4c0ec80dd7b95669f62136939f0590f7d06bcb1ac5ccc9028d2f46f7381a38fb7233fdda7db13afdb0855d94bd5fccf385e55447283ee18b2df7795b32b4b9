@@ -1,0 +1,14 @@
+import { CharacterMeta } from '../types';
+export declare class Avatar {
+    readonly id: string;
+    get isFromCache(): boolean;
+    private characterMeta;
+    private resources;
+    /** Local-only field: tracks whether cached model is "standard" or "compressed". */
+    _cachedModelType: string;
+    /**
+     * Get character metadata
+     * @returns Character metadata, including all configuration information (version, resource URLs, camera config, etc.)
+     */
+    getCharacterMeta(): CharacterMeta;
+}

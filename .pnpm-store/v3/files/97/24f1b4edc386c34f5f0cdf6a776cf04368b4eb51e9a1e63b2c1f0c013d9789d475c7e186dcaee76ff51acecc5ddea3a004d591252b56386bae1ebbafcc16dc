@@ -1,0 +1,28 @@
+/**
+ * Character settings type definitions for character templates
+ * Backend guarantees the schema although it is weakly typed in proto.
+ */
+export interface EyelidSettings {
+    auto_eyelid_adjustment: boolean;
+    enabled: boolean;
+    eyelid_threshold: number;
+    targets: number[];
+}
+export interface CameraSettings {
+    fovXRadians: number;
+    fovYRadians: number;
+    rotation: number;
+    translationX: number;
+    translationY: number;
+    translationZ: number;
+}
+export interface TransformSettings {
+    x: number;
+    y: number;
+    scale: number;
+}
+export interface CharacterSettings {
+    eyelid: EyelidSettings;
+    camera: CameraSettings;
+    transform?: TransformSettings;
+}

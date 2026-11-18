@@ -1,0 +1,46 @@
+import { LoadProgressInfo } from '../types';
+import { Avatar } from './Avatar';
+export declare class AvatarManager {
+    private static _instance;
+    private avatarDownloader;
+    private avatarCache;
+    /** 下载队列：FIFO 顺序 */
+    private downloadQueue;
+    /** 当前正在执行的任务 */
+    private currentTask;
+    /** 任务索引：快速查找 id 对应的任务 */
+    private taskIndex;
+    /**
+     * Access via global singleton
+     */
+    static get shared(): AvatarManager;
+    /**
+     * Load avatar
+     * @param id Avatar ID
+     * @param onProgress Progress callback
+     * @param useCompressedModel Use compressed model resource (~30% of original size, with minor quality degradation). Defaults to false.
+     * @returns Promise<Avatar>
+     */
+    load(id: string, onProgress?: (progress: LoadProgressInfo) => void, useCompressedModel?: boolean): Promise<Avatar>;
+    /**
+     * Cancel a pending or running download task
+     * @param id Avatar ID to cancel
+     * @returns true if task was found and cancelled
+     */
+    cancelLoad(id: string): boolean;
+    /**
+     * Get cached avatar
+     * @param id Avatar ID
+     * @returns Avatar instance, or undefined if not in cache
+     */
+    retrieve(id: string): Avatar | undefined;
+    /**
+     * Clear cached avatar for specified ID
+     * @param id Avatar ID
+     */
+    clear(id: string): void;
+    /**
+     * Clear all avatar cache and cancel all tasks
+     */
+    clearAll(): void;
+}

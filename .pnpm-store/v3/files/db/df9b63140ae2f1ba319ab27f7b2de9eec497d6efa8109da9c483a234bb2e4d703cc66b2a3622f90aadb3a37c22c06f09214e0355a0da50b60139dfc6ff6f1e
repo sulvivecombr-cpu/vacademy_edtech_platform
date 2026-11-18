@@ -1,0 +1,9 @@
+/**
+ * AvatarKit SDK - Unified Public API
+ */
+export { Avatar } from './core/Avatar';
+export { AvatarController } from './core/AvatarController';
+export { AvatarSDK } from './core/AvatarSDK';
+export { AvatarManager } from './core/AvatarManager';
+export { AvatarView } from './core/AvatarView';
+export * from './types';

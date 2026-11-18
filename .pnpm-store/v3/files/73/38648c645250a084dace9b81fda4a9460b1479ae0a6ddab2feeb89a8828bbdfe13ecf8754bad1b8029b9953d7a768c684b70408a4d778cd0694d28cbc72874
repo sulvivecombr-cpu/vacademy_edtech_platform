@@ -1,0 +1,201 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.3.8] - 2026-08-31
+
+### Added
+- The SDK now checks, one second after the first frame is reported as rendered, whether the canvas actually has anything on it, and reports a diagnostic when it is completely blank. Some devices pass the capability check and still render nothing; until now that failure was silent on our side and only surfaced as a user complaint. Costs a few milliseconds once per session and never blocks the render loop.
+
+### Changed
+- Internal telemetry only, no change to public API or runtime behaviour: diagnostics are now sent to a collection gateway instead of the storage backend directly, and the SDK no longer carries any credentials for that backend. Credentials shipped inside a redistributed SDK are readable by anyone who receives it.
+- Internal telemetry only, no change to public API or runtime behaviour: collection of browser page-performance metrics is now switched off explicitly in code rather than being left to a server-side setting, so what the SDK collects is fixed by the version you install. This is unrelated to the SDK's own frame-rate monitoring.
+- Internal telemetry only, no change to public API or runtime behaviour: diagnostic records now carry the session and device identifiers that the Android and iOS SDKs have always included, so a session can be followed across records. Records emitted by a companion SDK carry them too — those previously went out with no identity at all.
+- Updated the bundled analytics dependency, which fixes log batches being retried indefinitely when an ad blocker drops them and batches being discarded outright on a 408. The published bundle is marginally smaller than before.
+
+### Removed
+- Internal telemetry only, no change to public API or runtime behaviour: removed a playback-stall detector that only ever emitted one diagnostic and drove no behaviour. What it looked for is already covered by the stall and dropped-frame figures reported for every round of playback.
+
+### Fixed
+- Internal telemetry only, no change to public API or runtime behaviour: end-to-end latency is now reported when the host application supplies the motion data, not only when the SDK connects to the driving service itself. The measurements were being taken in both cases and discarded in one of them.
+- Internal telemetry only, no change to public API or runtime behaviour: the reported frame time now includes the core compute stage, which was previously left out of the total.
+
+## [1.3.7] - 2026-08-17
+
+### Fixed
+- Internal telemetry only, no change to public API or runtime behaviour: diagnostic records now carry this SDK's own version alongside the reporting one. A companion SDK built on top of this one declares its own identity, which replaced the version outright, so records from those integrations gave no indication of which renderer produced them.
+- Internal telemetry only, no change to public API or runtime behaviour: the client environment fields (page host, locale, screen and viewport size) are now available to companion SDKs, whose records previously carried none of them.
+
+## [1.3.6] - 2026-08-15
+
+### Fixed
+- **Fixed the SDK continuing to send audio under an already-finished conversation id in direct mode.** After `send(audio, end=true)`, feeding new audio while that round had not started playing yet reused the same conversation id on the wire, so the driving service received new audio on a request it had already been told was over. A new round now always starts under a fresh id, whether or not the previous one had begun playing. Host mode never produced the symptom (it owns the id and has no uplink) but shared the same flaw internally and is aligned.
+- Internal telemetry only, no change to public API or runtime behaviour: the connection identifier is now attached automatically to the SDK's diagnostic events and traces. It previously had to be passed by hand at each call site and reached only two of the event types, which made it impractical to line up client-side events with the driving service's own records for the same session.
+- Internal telemetry only, no change to public API or runtime behaviour: widened the duration buckets for template and asset downloads. The previous ceilings sat well below what a cold start on a large template actually takes, so the slow tail — the part worth measuring — collapsed into a single overflow bucket and 11 seconds could not be told apart from 90.
+
+## [1.3.5] - 2026-08-12
+
+### Fixed
+- **`initialize` no longer fails with `Cannot destructure property 'AvatarDownloader'` in production builds.** The SDK loaded several of its own modules dynamically, which the bundler compiled into a form that only resolves while those modules stay in separate chunks. Whether they do is decided by the *consuming* application's bundler, which merges them once a project grows past a certain size — so the same SDK build worked in development and in small projects, then broke on `vite build` in larger ones. Affects 1.3.1 through 1.3.5-beta.1; upgrading is the fix, no integration changes are needed.
+- Internal telemetry only, no change to public API or runtime behaviour: the avatar-loading and connection timings the SDK reports are now sent for failed attempts as well, each tagged with what went wrong. They were previously only sent on success, so the data could not tell a healthy integration apart from one where every load was failing. HTTP status codes alone could not fill the gap — a request that returns 200 and then fails to parse, or a WebSocket that is refused after the handshake, has no failing status code to report.
+- Internal telemetry only, no change to public API or runtime behaviour: motion data received in host mode now continues the trace started upstream, so one round of playback reads as a single trace end to end instead of two unrelated ones.
+
+## [1.3.4] - 2026-08-11
+
+### Fixed
+- **The Opus uplink encoder now actually runs off the main thread.** Asset URLs were emitted as absolute paths (`/assets/…`), so any app not served from the domain root — a Vite dev server included — got HTML back for the worker request. The SDK logged `Worker unavailable, falling back to main-thread encode` and encoded every chunk on the main thread, stalling rendering for the whole of playback. URLs are now relative to the referencing chunk.
+- **Next.js builds no longer fail on the Opus workers.** `withAvatarkit` now copies the pre-built workers (and the sibling chunks they import) into `public/assets/`, and tells webpack to leave those files alone. Previously the bundler re-processed the ESM worker and Terser rejected it with `'import' and 'export' cannot be used outside of module code`, breaking `next build` outright on 1.3.1 and later.
+- Internal telemetry only, no change to public API or runtime behaviour: `http.client.request.duration` no longer records a data point when an asset is served entirely from cache. Those entries carried a hardcoded `statusCode=200` and an empty `server.address`, and their sub-millisecond durations skewed the real network latency distribution. Cache hit rate and cache-hit latency remain available through `download_avatar_assets_latency` and `template_resources_load_measure`, both of which carry `cache_hit` and `cache_type`.
+
+## [1.3.3] - 2026-08-08
+
+### Fixed
+- Internal telemetry only, no change to public API or runtime behaviour: sessions driven through the companion RTC SDK are now attributed to that SDK and its version, matching how the Android and iOS SDKs already report. Previously such sessions were indistinguishable from a plain AvatarKit integration on the dashboards.
+
+## [1.3.2] - 2026-08-08
+
+### Fixed
+- Internal telemetry only, no change to public API or runtime behaviour: fixed the diagnostics the SDK reports to Spatius. Connection setup is now reported as two separate steps (handshake and session confirmation) instead of a single total, steps faster than a millisecond no longer come back out of order, and cache lookups that complete instantly are no longer reported as loads.
+
+## [1.3.1] - 2026-08-07
+
+Rolls up everything from the 1.3.1 beta line.
+
+### Added
+- `DrivingServiceMode.rtc`. Use it **only** when driving the avatar through the companion RTC SDK, `@spatius/avatarkit-rtc`; on `direct` / `backend` nothing changes. It is a telemetry dimension and unlocks no API — declaring it lets RTC-driven sessions be told apart from plain `backend` traffic on the dashboards.
+- Opus audio support. `AudioFormat.inputAudioFormat` (`'pcm'` default, or `'opus'`) declares the format the host feeds into the SDK via `send`/`yieldAudioData`; `'opus'` input is decoded back to PCM16 for local rendering and forwarded upstream as-is in direct mode. `AudioFormat.opusBitrate` (default `48000`) tunes the target bitrate. Only effective in direct mode.
+
+### Changed
+- **The direct-mode uplink now compresses audio to Opus by default** (`AudioFormat.opusUplinkEnabled`, previously off). It cuts the upload to roughly 1/8 at the cost of client-side encoding, which matters most on the mobile networks where stalls actually happen. Pass `opusUplinkEnabled: false` to keep the raw PCM uplink. Unchanged for host mode (no uplink) and for `'opus'` input (already compressed).
+- The `region` configuration now defaults to automatic selection: when left unset, the SDK picks the closest serving region at initialization. Passing an explicit `region` continues to force that region, unchanged. If automatic selection can't be reached, the SDK falls back to a default region and continues initializing.
+- Opus uplink encoding streams: each second of audio is sent as soon as it is encoded, instead of waiting for the whole chunk to finish. When a host hands over a long utterance in one call, the first packet used to wait out the entire encode; playback now starts noticeably sooner.
+- If the configured `sampleRate` is not one of Opus's supported rates, `initialize` logs a warning and falls back to a raw PCM uplink instead of silently failing to build the encoder.
+- `initialize` with a missing `appId` now fails fast (throws) with an updated message pointing to https://app.spatius.ai/ to obtain an app ID.
+
+### Fixed
+- Fixed playback failing to start when the first audio arrived slightly after the animation frames (both host and direct modes) — playback now begins correctly instead of stalling.
+- Fixed an intermittent burst of harsh noise at the start of Opus-input playback: on a fast start the first audio could be played before the Opus decoder finished initializing. Opus input is now always decoded before playback, so no raw Opus is ever played as PCM.
+- Fixed the idle animation freezing (and a delayed start) in direct mode with Opus input when animation frames arrived before the decoded audio: playback now waits for both audio and animation to be ready, and the avatar keeps looping idle smoothly until the round actually begins.
+- Fixed playback getting stuck when audio was sent while the connection was still being established and the session later reconnected: the audio clock could freeze, leaving the avatar frozen on a single frame instead of animating in sync with the audio.
+- Fixed the avatar not returning to idle after a playback round finished in that same send-then-connect scenario; it now correctly transitions back to idle when playback ends.
+
+## [1.3.1-beta.7] - 2026-08-02
+
+### Changed
+- Internal telemetry changes only; no changes to the public API or runtime behavior.
+
+## [1.3.1-beta.6] - 2026-08-01
+
+### Changed
+- Internal telemetry changes only; no changes to the public API or runtime behavior.
+
+## [1.3.1-beta.5] - 2026-07-31
+
+### Changed
+- Internal playback and telemetry changes only; no changes to the public API or runtime behavior.
+
+## [1.3.1-beta.4] - 2026-07-30
+
+### Added
+- Opus audio support. `AudioFormat.inputAudioFormat` (`'pcm'` default, or `'opus'`) declares the format the host feeds into the SDK via `send`/`yieldAudioData`; `'opus'` input is decoded back to PCM16 for local rendering and forwarded upstream as-is in direct mode. `AudioFormat.opusUplinkEnabled` (default `false`) opts the direct-mode uplink into Opus compression (roughly 1/8 the upload, at the cost of client-side encoding), and `AudioFormat.opusBitrate` (default `48000`) tunes the target bitrate. Only effective in direct mode.
+
+### Changed
+- When `opusUplinkEnabled` is `true` but the configured `sampleRate` is not Opus-compatible, `initialize` now logs a warning and automatically falls back to a raw PCM uplink instead of silently failing to build the encoder.
+- `initialize` with a missing `appId` now fails fast (throws) with an updated message pointing to https://app.spatius.ai/ to obtain an app ID.
+
+### Fixed
+- Fixed playback failing to start when the first audio arrived slightly after the animation frames (both host and direct modes) — playback now begins correctly instead of stalling.
+- Fixed an intermittent burst of harsh noise at the start of Opus-input playback: on a fast start the first audio could be played before the Opus decoder finished initializing. Opus input is now always decoded before playback, so no raw Opus is ever played as PCM.
+- Fixed the idle animation freezing (and a delayed start) in direct mode with Opus input when animation frames arrived before the decoded audio: playback now waits for both audio and animation to be ready, and the avatar keeps looping idle smoothly until the round actually begins.
+
+## [1.3.1-beta.3] - 2026-07-18
+
+### Changed
+- Internal playback telemetry only; no changes to the public API or runtime behavior.
+
+## [1.3.1-beta.2] - 2026-07-17
+
+### Fixed
+- Fixed playback getting stuck when audio was sent while the connection was still being established and the session later reconnected: the audio clock could freeze, leaving the avatar frozen on a single frame instead of animating in sync with the audio.
+- Fixed the avatar not returning to idle after a playback round finished in that same send-then-connect scenario; it now correctly transitions back to idle when playback ends.
+
+## [1.3.1-beta.1] - 2026-07-16
+
+### Changed
+- The `region` configuration now defaults to automatic selection: when left unset, the SDK picks the closest serving region at initialization. Passing an explicit `region` continues to force that region, unchanged. If automatic selection can't be reached, the SDK falls back to a default region and continues initializing.
+
+## [1.3.0] - 2026-07-04
+
+### Added
+- Avatars are now automatically classified as body-fixation or non-body-fixation and loaded on the matching path, driven by the asset's `compatibility_flags`.
+- `ErrorCode.unsupportedAvatarAsset`. When loading an avatar whose asset requires a newer SDK, the load now fails fast with this error (surfaced via the existing `AvatarError` / `onError` path) instead of rendering incorrectly, prompting an SDK upgrade.
+
+### Changed
+- The shared template is now gzip-compressed, reducing its CDN size from 43 MB to 29 MB. It is decompressed transparently and is byte-for-byte identical to the original.
+- The npm package license changed from MIT to UNLICENSED.
+
+## [1.2.0-beta.4] - 2026-06-28
+
+### Fixed
+- Avatars without body-fixation support no longer render a malformed body. Such avatars now correctly render the head only, matching pre-1.2.0-beta.3 behavior. Body-fixation avatars are unaffected.
+- Fixed the opening transition being dropped and a brief stutter at the start of the second and subsequent turns in a continuous conversation.
+
+## [1.2.0] - 2026-06-28
+
+### Fixed
+- Fixed the opening transition being dropped and a brief stutter at the start of the second and subsequent turns in a continuous conversation.
+
+## [1.2.0-beta.3] - 2026-06-25
+
+### Added
+- New `ErrorCode.unsupportedAvatarAsset`. When loading an avatar whose asset requires a newer SDK, the load now fails fast with this error (surfaced via the existing `AvatarError` / `onError` path) instead of rendering incorrectly, prompting an SDK upgrade.
+
+## [1.2.0-beta.2] - 2026-06-23
+
+### Removed
+- Post-processing support has been removed from the SDK. The `PostProcessingConfig` type and `AvatarController.setPostProcessingConfig()` are gone; the SDK now renders frames exactly as provided. No effect on standard playback or RTC.
+
+## [1.2.0-beta.1] - 2026-06-19
+
+### Added
+- Configurable frame-starvation handling. New public API:
+  - `FrameStarvationMode` enum with `audioIndependent` (default) and `strictSync`.
+  - `AvatarController.frameStarvationMode: FrameStarvationMode` — choose how playback behaves when animation frames can't keep up with audio. `audioIndependent` keeps audio playing while animation catches up (previous behavior); `strictSync` pauses audio until frames arrive, keeping audio and animation strictly in sync.
+  - `AvatarController.onPlaybackStall: ((stalled: boolean) => void) | null` — fires when audio is paused/resumed due to frame starvation (only in `strictSync`).
+
+### Changed
+- Avatars now load via the latest avatar asset format.
+- CDN selection now adapts to the configured region.
+
+## [1.1.0-beta.1] - 2026-06-08
+
+First 1.1 pre-release. Includes breaking changes — see below.
+
+### Added
+- Render quality tiers (`standard` / `high` / `ultra`), selectable at init via the `renderQuality` configuration option or at runtime via `setRenderQuality()`.
+- Render output resolution cap, to bound rendering cost on high-DPI displays.
+- `Configuration.region` is now part of the public API, so consumers can target non-default regions (e.g. `cn`).
+
+### Changed
+- Unified audio playback path with automatic recovery after a fallback.
+- Smoother RTC-mode speak→idle transition with bezier end interpolation.
+
+### Fixed
+- Fixed unfriendly avatar-load error messages that could expose internal request details.
+- Fixed `Configuration.region` being stripped from the published type declarations, which prevented TypeScript consumers from setting the region.
+
+### Breaking Changes
+- `DrivingServiceMode` values renamed from `sdk` / `host` to `direct` / `backend`.
+- Removed the `eyefocus` option (no longer supported in `CharacterSettings` or post-processing configuration).
+
+## [1.0.0] - 2026-05-17
+
+First stable release.
+
+- Real-time avatar rendering with WebGL and WebGPU backends.
+- Audio-driven SDK mode and host-driven mode for custom animation pipelines.
+- Public API: `AvatarSDK`, `AvatarView`, `AvatarController`, `AvatarManager`.
+- See [README.md](README.md) for installation and usage.

@@ -1,0 +1,239 @@
+/**
+ * Next.js plugin for @spatius/avatarkit
+ * Handles WASM file configuration for both webpack and Turbopack (Next.js 15+/16+)
+ *
+ * Usage:
+ *   import { withAvatarkit } from '@spatius/avatarkit/next'
+ *   export default withAvatarkit({ ...your next config... })
+ */
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { writeFileSync, readFileSync, readdirSync, mkdirSync, copyFileSync, existsSync, } from 'fs';
+// ── Locate SDK directory ──────────────────────────────────────────────
+// Walk up from this file (inside the SDK package) to find the package root.
+// This is reliable regardless of process.cwd(), monorepos, or hoisted deps.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Since this file IS inside the SDK package (at package root), __dirname is the SDK dir.
+const sdkDir = __dirname;
+const sdkDistDir = join(sdkDir, 'dist');
+// ── Embedded webpack loader ───────────────────────────────────────────
+// Fixes Emscripten's scriptDirectory: bundlers replace import.meta.url with
+// a build-time path that browsers can't use to locate WASM files.
+// This loader replaces it with the correct public path.
+function createLoaderCode(wasmPublicPath) {
+    return `module.exports = function(source) {
+  // Strategy 1: Replace assignment only (simpler, more robust)
+  var pattern1 = /scriptDirectory\\s*=\\s*new\\s+URL\\(\\s*"\\."\\s*,\\s*_scriptName\\s*\\)\\.href\\s*;/;
+  var result = source.replace(pattern1, 'scriptDirectory = "${wasmPublicPath}";');
+  if (result !== source) return result;
+
+  // Strategy 2: Full try/catch block (handles different catch syntax)
+  var pattern2 = /try\\s*\\{\\s*scriptDirectory\\s*=\\s*new\\s+URL\\(\\s*"\\."\\s*,\\s*_scriptName\\s*\\)\\.href\\s*;?\\s*\\}\\s*catch\\s*(\\([^)]*\\))?\\s*\\{\\s*\\}/;
+  result = source.replace(pattern2, 'scriptDirectory = "${wasmPublicPath}";');
+  if (result !== source) return result;
+
+  console.warn('[avatarkit] WARNING: scriptDirectory pattern not matched in', this.resourcePath);
+  return source;
+}
+`;
+}
+function ensureLoader(wasmPublicPath) {
+    const cacheDir = join(sdkDir, '.cache');
+    const loaderPath = join(cacheDir, 'wasm-script-dir-loader.cjs');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(loaderPath, createLoaderCode(wasmPublicPath));
+    return loaderPath;
+}
+// ── Copy WASM files to public directory ───────────────────────────────
+// Works for both webpack and Turbopack: public/ files are served by Next.js
+function copyWasmToPublic(projectDir) {
+    const publicWasmDir = join(projectDir, 'public', '_avatarkit');
+    mkdirSync(publicWasmDir, { recursive: true });
+    try {
+        const files = readdirSync(sdkDistDir);
+        for (const file of files) {
+            if (file.startsWith('avatar_core_wasm') && file.endsWith('.wasm')) {
+                const src = join(sdkDistDir, file);
+                const dest = join(publicWasmDir, file);
+                copyFileSync(src, dest);
+            }
+        }
+    }
+    catch (err) {
+        console.warn('[avatarkit] Failed to copy WASM files:', err.message);
+        console.warn('[avatarkit] SDK dist dir:', sdkDistDir);
+    }
+}
+// ── Copy Opus workers to public directory ─────────────────────────────
+// The SDK loads these with `new Worker(new URL('assets/…', import.meta.url))`.
+// Vite resolves that at build time; Next.js instead tries to bundle the worker,
+// and its ESM output then fails Terser (`import` outside module code). Serving
+// the pre-built worker from public/ sidesteps the consumer bundler entirely.
+function copyWorkersToPublic(projectDir) {
+    const publicAssetsDir = join(projectDir, 'public', 'assets');
+    try {
+        const workerDir = join(sdkDistDir, 'assets');
+        if (!existsSync(workerDir))
+            return;
+        mkdirSync(publicAssetsDir, { recursive: true });
+        // The workers are ES modules that import sibling chunks (the logger and the
+        // rolldown runtime), so copying the worker alone leaves it unable to start.
+        // Follow the import graph instead of naming chunks that can change on any
+        // rebuild.
+        const queue = readdirSync(workerDir).filter((file) => file.includes('.worker-') && file.endsWith('.js'));
+        const copied = new Set();
+        while (queue.length > 0) {
+            const file = queue.shift();
+            if (copied.has(file))
+                continue;
+            const src = join(workerDir, file);
+            if (!existsSync(src)) {
+                console.warn('[avatarkit] Worker chunk missing from dist:', file);
+                continue;
+            }
+            copied.add(file);
+            copyFileSync(src, join(publicAssetsDir, file));
+            const source = readFileSync(src, 'utf8');
+            for (const match of source.matchAll(/from\s*["']\.\/([^"']+)["']/g)) {
+                if (!copied.has(match[1]))
+                    queue.push(match[1]);
+            }
+        }
+    }
+    catch (err) {
+        console.warn('[avatarkit] Failed to copy Opus workers:', err.message);
+    }
+}
+// ── Webpack plugin: copy WASM to build output ─────────────────────────
+// Emits WASM files into .next/static/chunks/ during webpack compilation.
+// This is needed in addition to public/ for standalone Docker deployments
+// where .next/static/ is copied but public/ may not be.
+class CopyWasmPlugin {
+    apply(compiler) {
+        compiler.hooks.thisCompilation.tap('AvatarkitCopyWasm', (compilation) => {
+            compilation.hooks.processAssets.tap({
+                name: 'AvatarkitCopyWasm',
+                stage: compiler.webpack.Compilation.PROCESS_ASSETS_STAGE_ADDITIONAL,
+            }, () => {
+                try {
+                    const files = readdirSync(sdkDistDir);
+                    for (const file of files) {
+                        if (file.startsWith('avatar_core_wasm') && file.endsWith('.wasm')) {
+                            const content = readFileSync(join(sdkDistDir, file));
+                            compilation.emitAsset(`static/chunks/${file}`, new compiler.webpack.sources.RawSource(content));
+                        }
+                    }
+                }
+                catch (err) {
+                    console.warn('[avatarkit] CopyWasmPlugin error:', err.message);
+                }
+            });
+        });
+    }
+}
+// ── Detect project root from next.config location ─────────────────────
+// next.config.mjs is always at the project root. Since this module is imported
+// from next.config.mjs, we find the project root by walking up from import.meta.url
+// of the calling module. However, we can't access the caller's import.meta.url,
+// so we search for the nearest next.config.* file from the SDK location upwards.
+function findProjectRoot() {
+    let dir = process.cwd(); // fallback, but also check for next.config
+    const configNames = [
+        'next.config.mjs',
+        'next.config.js',
+        'next.config.ts',
+        'next.config.cjs',
+    ];
+    // Verify cwd has a next.config file
+    for (const name of configNames) {
+        if (existsSync(join(dir, name))) {
+            return dir;
+        }
+    }
+    // Fallback: search from SDK location upward
+    let searchDir = sdkDir;
+    while (searchDir !== dirname(searchDir)) {
+        for (const name of configNames) {
+            if (existsSync(join(searchDir, name))) {
+                return searchDir;
+            }
+        }
+        searchDir = dirname(searchDir);
+    }
+    return process.cwd();
+}
+// ── Main plugin ───────────────────────────────────────────────────────
+export function withAvatarkit(nextConfig = {}) {
+    const basePath = nextConfig.basePath || '';
+    const wasmPublicPath = `${basePath}/_avatarkit/`;
+    const loaderPath = ensureLoader(wasmPublicPath);
+    const projectRoot = findProjectRoot();
+    // Copy WASM files to public/_avatarkit/ (works for both webpack & Turbopack)
+    copyWasmToPublic(projectRoot);
+    copyWorkersToPublic(projectRoot);
+    return {
+        ...nextConfig,
+        // ── Turbopack configuration (Next.js 15+/16+) ──
+        turbopack: {
+            ...nextConfig.turbopack,
+            rules: {
+                ...nextConfig.turbopack?.rules,
+                '**/avatar_core_wasm*.js': {
+                    loaders: [loaderPath],
+                    as: '*.js',
+                },
+            },
+        },
+        // ── Webpack configuration ──
+        webpack: (config, context) => {
+            // 1. Fix: Next.js sets module.generator.asset.filename which breaks asset/inline
+            if (config.module.generator?.asset?.filename) {
+                const filename = config.module.generator.asset.filename;
+                delete config.module.generator.asset.filename;
+                config.module.generator['asset/resource'] = {
+                    ...config.module.generator['asset/resource'],
+                    filename,
+                };
+            }
+            // 2. Fix: Emscripten scriptDirectory derived from import.meta.url
+            config.module.rules.push({
+                test: /avatar_core_wasm.*\.js$/,
+                enforce: 'pre',
+                use: [{ loader: loaderPath }],
+            });
+            // 3. Leave the Opus workers alone: they are already built and are served
+            // from public/assets/. Webpack would otherwise pull them through its own
+            // pipeline, where Terser parses the ESM worker as a classic script and
+            // fails on the `import` statements. An empty loader list keeps the file
+            // resolvable without re-processing it.
+            config.module.rules.unshift({
+                test: /[\\/]assets[\\/].*\.worker-[^/\\]*\.js$/,
+                type: 'javascript/auto',
+                use: [],
+                parser: { javascript: { worker: false } },
+            });
+            // 4. Copy WASM files to static/chunks/ (client build only, for standalone)
+            if (!context.isServer) {
+                config.plugins.push(new CopyWasmPlugin());
+            }
+            // Chain with user's webpack config
+            if (typeof nextConfig.webpack === 'function') {
+                return nextConfig.webpack(config, context);
+            }
+            return config;
+        },
+        // ── Headers: ensure WASM content-type ──
+        async headers() {
+            const userHeaders = typeof nextConfig.headers === 'function' ? await nextConfig.headers() : [];
+            return [
+                ...userHeaders,
+                {
+                    source: '/_avatarkit/:path*.wasm',
+                    headers: [{ key: 'Content-Type', value: 'application/wasm' }],
+                },
+            ];
+        },
+    };
+}
+export default withAvatarkit;

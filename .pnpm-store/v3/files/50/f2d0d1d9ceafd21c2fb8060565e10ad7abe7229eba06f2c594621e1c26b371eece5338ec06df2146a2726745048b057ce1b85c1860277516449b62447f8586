@@ -1,0 +1,126 @@
+import { copyFileSync, existsSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+/**
+ * Vite plugin for @spatius/avatarkit
+ * Automatically handles WASM file configuration for development and production builds
+ *
+ * @example
+ * ```ts
+ * import { defineConfig } from 'vite'
+ * import { avatarkitVitePlugin } from '@spatius/avatarkit/vite'
+ *
+ * export default defineConfig({
+ *   plugins: [
+ *     avatarkitVitePlugin()
+ *   ]
+ * })
+ * ```
+ */
+export function avatarkitVitePlugin() {
+    let rootDir;
+    return {
+        name: 'avatarkit-wasm',
+        // 保存项目根目录
+        configResolved(config) {
+            rootDir = config.root;
+        },
+        // 开发服务器 MIME 类型配置
+        configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+                if (req.url?.endsWith('.wasm')) {
+                    res.setHeader('Content-Type', 'application/wasm');
+                }
+                next();
+            });
+        },
+        // 构建时自动复制 WASM 文件和生成 headers
+        closeBundle() {
+            if (!rootDir)
+                return;
+            const wasmSourceDir = join(rootDir, 'node_modules/@spatius/avatarkit/dist');
+            // 先查找并读取 JS glue 文件，提取它引用的 WASM 文件名
+            let wasmFileName = null;
+            if (existsSync(wasmSourceDir)) {
+                const files = readdirSync(wasmSourceDir);
+                const wasmJsFile = files.find((f) => f.startsWith('avatar_core_wasm') && f.endsWith('.js'));
+                if (wasmJsFile) {
+                    const wasmJsSource = join(wasmSourceDir, wasmJsFile);
+                    try {
+                        const jsContent = readFileSync(wasmJsSource, 'utf-8');
+                        // 从 JS 文件中提取 WASM 文件名
+                        // 匹配 avatar_core_wasm-{hash}.wasm 或 avatar_core_wasm.wasm
+                        // 使用更精确的正则，匹配带引号或不带引号的情况
+                        const wasmMatch = jsContent.match(/["'`]?avatar_core_wasm[-\w]*\.wasm["'`]?/g);
+                        if (wasmMatch && wasmMatch.length > 0) {
+                            // 取第一个匹配，去掉引号
+                            wasmFileName = wasmMatch[0].replace(/["'`]/g, '');
+                        }
+                    }
+                    catch (error) {
+                        console.warn('⚠️ [avatarkit] Could not read JS glue file:', error);
+                    }
+                }
+            }
+            // 如果从 JS 文件中找到了 WASM 文件名，使用它；否则回退到默认名称
+            const targetWasmName = wasmFileName || 'avatar_core_wasm.wasm';
+            const wasmSource = join(wasmSourceDir, targetWasmName);
+            const wasmDest = join(rootDir, `dist/assets/${targetWasmName}`);
+            const wasmJsDest = join(rootDir, 'dist/assets/avatar_core_wasm.js');
+            const headersDest = join(rootDir, 'dist/_headers');
+            // 复制 WASM 文件
+            if (existsSync(wasmSource)) {
+                copyFileSync(wasmSource, wasmDest);
+                console.log(`✅ [avatarkit] Copied WASM file to dist/assets/${targetWasmName}`);
+            }
+            else {
+                console.warn(`⚠️ [avatarkit] WASM file not found: ${wasmSource}`);
+                if (wasmFileName) {
+                    console.warn(`   Expected file: ${targetWasmName} (extracted from JS glue file)`);
+                }
+            }
+            // 复制 WASM JS glue 文件
+            if (existsSync(wasmSourceDir)) {
+                const files = readdirSync(wasmSourceDir);
+                const wasmJsFile = files.find((f) => f.startsWith('avatar_core_wasm') && f.endsWith('.js'));
+                if (wasmJsFile) {
+                    const wasmJsSource = join(wasmSourceDir, wasmJsFile);
+                    copyFileSync(wasmJsSource, wasmJsDest);
+                    console.log(`✅ [avatarkit] Copied WASM JS file to dist/assets/avatar_core_wasm.js (from ${wasmJsFile})`);
+                }
+                else {
+                    console.log('ℹ️ [avatarkit] WASM JS file not found (may be handled by Vite):', wasmSourceDir);
+                }
+            }
+            // 生成 _headers 文件（用于 Cloudflare Pages 等平台）
+            const headersContent = '/*.wasm\n  Content-Type: application/wasm\n';
+            writeFileSync(headersDest, headersContent);
+            console.log('✅ [avatarkit] Created _headers file for Cloudflare Pages');
+        },
+        // 自动配置 Vite 选项
+        config() {
+            return {
+                optimizeDeps: {
+                    exclude: ['@spatius/avatarkit']
+                },
+                assetsInclude: ['**/*.wasm'],
+                build: {
+                    assetsInlineLimit: 0, // 确保 WASM 文件不被内联
+                    rollupOptions: {
+                        output: {
+                            assetFileNames: (assetInfo) => {
+                                // WASM 文件使用固定名称
+                                if (assetInfo.name?.endsWith('.wasm')) {
+                                    return 'assets/[name][extname]';
+                                }
+                                // 其他资源使用 hash
+                                return 'assets/[name]-[hash][extname]';
+                            }
+                        }
+                    }
+                }
+            };
+        }
+    };
+}
+// 默认导出
+export default avatarkitVitePlugin;

@@ -1,0 +1,72 @@
+import { CameraSettings, CharacterSettings } from './character-settings';
+export interface Resource {
+    type: string;
+    local: string;
+    remote: string;
+}
+export interface ResourceHolder {
+    resource?: Resource;
+    /** Compressed model resource (~30% of original size, with minor quality degradation). */
+    xrResource?: Resource;
+}
+export interface Models {
+    shape?: ResourceHolder;
+    gsStandard?: ResourceHolder;
+    gsHigh?: ResourceHolder;
+    gsUltra?: ResourceHolder;
+}
+export interface Animations {
+    frameIdle?: ResourceHolder;
+    frameMono?: ResourceHolder;
+    audioMono?: ResourceHolder;
+}
+export interface CustomAnimation {
+    /** Animation clip name. */
+    name: string;
+    /** The clip's resource (local/remote URLs), mirroring other asset resources. */
+    resource?: Resource;
+}
+export interface CharacterAsset {
+    characterId: string;
+    version: string;
+    /**
+     * 资产兼容性标记。core 据此精确匹配渲染逻辑：
+     * [] → 基础；["easy_body"] → 身体固定；其它组合 → 当前 SDK 不支持。
+     */
+    compatibilityFlags: string[];
+    createdAt?: string;
+    updatedAt?: string;
+    camera?: ResourceHolder;
+    models?: Models;
+    animations?: Animations;
+    background?: ResourceHolder;
+    characterSettings?: {
+        [key: string]: any;
+    };
+    customAnimations: CustomAnimation[];
+}
+/**
+ * Character metadata
+ */
+export type CharacterMeta = CharacterAsset & {
+    characterSettings?: CharacterSettings;
+};
+export type PreloadResources<T> = {
+    version: string;
+} & T;
+export type PreloadCameraSettings = PreloadResources<{
+    camera: CameraSettings;
+}>;
+/**
+ * Resource type enumeration
+ */
+export declare enum ResourceType {
+    CAMERA = "camera",
+    ANIMATION_IDLE = "frameIdle",
+    MODEL_SHAPE = "shape",
+    MODEL_GS = "gsStandard"
+}
+/**
+ * Extract all resource URLs
+ */
+export declare function extractResourceUrls(meta: CharacterMeta): Record<ResourceType, string | null>;

@@ -1,0 +1,71 @@
+import { Configuration, RenderQuality } from '../types';
+export declare class AvatarSDK {
+    private static _initializationState;
+    private static _initializingPromise;
+    private static _configuration;
+    private static readonly _version;
+    private static _avatarCore;
+    private static _cachedDeviceScore;
+    private static _rendererBackend;
+    /** Render output resolution cap. Disabled by default; when enabled and the
+     *  canvas backing height (css × DPR) exceeds maxHeight, the canvas is sized
+     *  to maxHeight (aspect-preserving) and the browser scales it back up to
+     *  the CSS box. Training material is 1080p so heights above ~1080-1440
+     *  add no real visual information. */
+    static renderResolutionCapEnabled: boolean;
+    static renderResolutionMaxHeight: number;
+    /**
+     * Initialize SDK
+     * @param appId Application ID to be included in both HTTP Headers and WebSocket Headers
+     * @param configuration Configuration parameters
+     */
+    static initialize(appId: string, configuration: Configuration): Promise<void>;
+    private static _initializeInternal;
+    /**
+     * Set sessionToken
+     * Developer Client -> Developer Server -> AvatarKit Server -> return sessionToken (max 1 hour validity)
+     * Include in WebSocket Headers for avatar WebSocket service authentication
+     */
+    static setSessionToken(token: string): void;
+    /**
+     * Set userId
+     * Optional interface for developers, SDK includes this in telemetry logs
+     */
+    static setUserId(userId: string): void;
+    static get appId(): string | null;
+    static get configuration(): Configuration | null;
+    /**
+     * Update the global render quality tier. Takes effect on the next rendered
+     * frame across all active AvatarView instances. Throws if SDK isn't initialized.
+     */
+    static setRenderQuality(quality: RenderQuality): void;
+    /** Toggle the render output resolution cap. Takes effect on the next layout
+     *  pass across all active AvatarView instances. */
+    static setRenderResolutionCap(enabled: boolean, maxHeight?: number): void;
+    static get sessionToken(): string | null;
+    static get userId(): string | null;
+    static get version(): string;
+    /**
+     * Cleanup resources
+     */
+    static cleanup(): void;
+    /**
+     * Device performance score (CPU + GPU).
+     * CPU: matrix multiply throughput in Web Worker (warmup 1s + measure 1s).
+     * GPU: WebGPU compute shader throughput (warmup 1s + measure 1s).
+     * Returns 0 for GPU if WebGPU is not available.
+     */
+    static deviceScore(): Promise<{
+        cpuScore: number;
+        gpuScore: number;
+    }>;
+    private static readonly CPU_SCORE_THRESHOLD;
+    private static readonly GPU_SCORE_THRESHOLD;
+    /**
+     * Check if the current device can run the avatar.
+     * Runs a ~2s benchmark, reports device info and scores to PostHog.
+     * Currently always returns true — thresholds will be calibrated from production data.
+     */
+    static isDeviceSupported(): Promise<boolean>;
+    private static _getGPURenderer;
+}

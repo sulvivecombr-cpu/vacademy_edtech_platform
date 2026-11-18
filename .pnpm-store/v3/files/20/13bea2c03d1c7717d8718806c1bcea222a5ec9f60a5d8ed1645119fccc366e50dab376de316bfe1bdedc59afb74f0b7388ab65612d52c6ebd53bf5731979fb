@@ -1,0 +1,233 @@
+import { Avatar } from './Avatar';
+import { ConnectionState, AvatarError, DrivingServiceMode, FrameStarvationMode, ConversationState, AnimationType } from '../types';
+import { FrameRateInfo } from '../performance/FrameRateMonitor';
+export declare class AvatarController {
+    private networkLayer?;
+    private readonly playbackMode;
+    private isStartingPlayback;
+    private currentConversationId;
+    private reqEnd;
+    private inputOpusDecoderProxy;
+    /**
+     * Serializes the async decode→buffer path so PCM reaches the playback buffer in
+     * FEED ORDER. Critical because OggOpusDecoder (inside the proxy) is stateful — it
+     * carries a partial Ogg page across calls — so out-of-order decodes corrupt the
+     * stream. Each send()/yieldAudioData() chains onto this; the worker is FIFO, but
+     * awaiting also keeps addAudioChunkToBuffer(pcm) calls from interleaving.
+     * Mirrors AnimationWebSocketClient.opusSendChain on the uplink.
+     */
+    private inputDecodeChain;
+    /**
+     * Brings host-provided Opus into the single shape the rest of the pipeline
+     * expects: an Ogg stream. Streaming TTS providers hand over bare Opus packets
+     * rather than Ogg, so those get muxed here — once, before the send path splits,
+     * so local playback and the uplink both get valid Ogg.
+     */
+    private readonly opusInputNormalizer;
+    onConnectionState: ((state: ConnectionState) => void) | null;
+    onConversationState: ((state: ConversationState) => void) | null;
+    onError: ((error: AvatarError) => void) | null;
+    /** Callback for animation type changes (e.g., idle → mono in fallback mode). Aligned with iOS/Android AvatarController.onAnimationState. */
+    onAnimationState: ((type: AnimationType) => void) | null;
+    /**
+     * Strategy for handling animation-frame starvation. Default is
+     * {@link FrameStarvationMode.audioIndependent} (audio keeps playing, starvation only
+     * reported as telemetry — historical behavior). Set to {@link FrameStarvationMode.strictSync}
+     * to pause audio when frames run out and resume on new frames, notified via {@link onPlaybackStall}.
+     * Aligned with iOS/Android AvatarController.frameStarvationMode.
+     */
+    frameStarvationMode: FrameStarvationMode;
+    /**
+     * Fires when audio is paused/resumed due to frame starvation. Only invoked in
+     * {@link FrameStarvationMode.strictSync}. `stalled=true` — frames ran out, audio paused;
+     * `stalled=false` — new frames arrived, audio resumed (or conversation ended / fell back).
+     * Aligned with iOS/Android AvatarController.onPlaybackStall.
+     */
+    onPlaybackStall: ((stalled: boolean) => void) | null;
+    private eventListeners;
+    private readonly frameRateMonitor;
+    /** Frame rate monitoring callback. Fires with aggregated metrics from a 2-second sliding window. */
+    get onFrameRateInfo(): ((info: FrameRateInfo) => void) | null;
+    set onFrameRateInfo(value: ((info: FrameRateInfo) => void) | null);
+    /** Whether frame rate monitoring is enabled. Default is false (zero overhead when disabled). */
+    get frameRateMonitorEnabled(): boolean;
+    set frameRateMonitorEnabled(value: boolean);
+    private renderCallback?;
+    private characterHandle;
+    private lastRenderedFrameIndex;
+    private keyframesOffset;
+    private readonly MAX_KEYFRAMES;
+    private readonly KEYFRAMES_CLEANUP_THRESHOLD;
+    private lastSyncLogTime;
+    private lastOutOfBoundsState;
+    private isFallbackMode;
+    private frameStarvationEvents;
+    private isFrameStarved;
+    private audioStallEvents;
+    private isAudioBufferStalled;
+    private playbackEndReason;
+    private receivedAudioBytes;
+    private receivedAnimationFrames;
+    private playbackStartedAt;
+    private playbackEndedAt;
+    /**
+     * Whether this round's final animation batch (ServerResponseAnimation.end) has arrived.
+     * Frame starvation is only possible BEFORE this — once all frames are in, any remaining
+     * audio tail is normal end-of-round, not starvation, so audio must keep playing to idle
+     * and must never be paused (matters most in strictSync). Reset per conversation.
+     */
+    private animationEnded;
+    /**
+     * Whether audio is currently paused because of frame starvation (strictSync only).
+     * Orthogonal to user pause — user pause/resume does not change it; only frame arrival does.
+     */
+    private isAudioStalledForStarvation;
+    private latencyMarks;
+    /**
+     * W3C `traceparent` the driving service stamped on this round's animation
+     * packets (`ServerResponseAnimation.trace_context`), first one wins.
+     *
+     * Backend mode only, because only there is the SDK the FOLLOWER of the trace:
+     * the conversation_id is minted locally and never reaches the server, so the
+     * trace_id derived from it cannot match the server's and the round would
+     * otherwise report as a trace unrelated to the upstream one. In direct mode the
+     * SDK originates the trace (it sends buildTraceparent upstream on the first
+     * audio packet), so the echoed value is by construction the derived one and is
+     * not collected — see startPlaybackTrace.
+     *
+     * Read when the round's trace is built (at playback end), hence kept for the
+     * round rather than used on the spot. Reset per conversation alongside
+     * latencyMarks.
+     */
+    private serverTraceparent;
+    /**
+     * Per-call trace records for the current round, in call order. Unlike
+     * latencyMarks (which aggregates arrival into per-second/per-group instants),
+     * these are one entry per actual API action, so each becomes a short span:
+     * how long the CALL itself took, plus what it carried (audio seconds sent /
+     * frames received). Reset per conversation alongside latencyMarks.
+     */
+    private traceActions;
+    /** 上行编码分段的接收钩子，构造时装上、dispose 时卸下（见 setOpusEncodeSegmentSink）。 */
+    private readonly onEncodeSegment;
+    /**
+     * 解码 span 的聚合状态：累计满 1 秒 PCM 收一段。
+     *
+     * 跨 chunk 累计——宿主流式喂时一块可能远不足 1 秒，按块收段会碎成几百个 span。
+     * `decodeSpanStart` 是上一段的收尾时刻（null = 用本次 decode 的发起时刻当起点）。
+     */
+    private decodeSpanStart;
+    private decodeSpanBytes;
+    /**
+     * Highest Ogg granule forwarded so far this round, for Opus input. The granule
+     * accumulates across a stream, so a send's audio seconds is its own end granule
+     * minus this. Reset per conversation. -1 = nothing forwarded yet.
+     */
+    private lastOpusGranule;
+    /**
+     * 音频字节率（bytes/s），按 **实际配置的采样率** 动态计算，而不是写死 16kHz。
+     * SDK 支持 8k/16k/22.05k/24k/32k/44.1k/48k，写死会让非 16k 的时长统计整体缩放出错。
+     * Opus 输入已被 AvatarSDK.getAudioFormat() 归一化成 48000，正是解码后 PCM 的真实采样率。
+     */
+    private get audioBytesPerSecond();
+    constructor(avatar: Avatar, options?: {
+        playbackMode?: DrivingServiceMode;
+    });
+    private handleVisibilityChange;
+    /**
+     * Playback time of the current audio session, in seconds.
+     * Resets to 0 on each new playback round. Returns 0 when not playing.
+     */
+    getAudioTime(): number;
+    private shouldReportPlaybackStats;
+    private _getDeviceScoreProps;
+    /**
+     * Initialize audio context (must be called in user gesture context)
+     *
+     * This method must be called before any audio operations (send, yieldAudioData, etc.)
+     * to ensure AudioContext is created and initialized in a user gesture context.
+     *
+     * @example
+     * // In user click handler
+     * button.addEventListener('click', async () => {
+     *   await avatarView.controller.initializeAudioContext()
+     *   // Now you can safely use send() or yieldAudioData()
+     * })
+     */
+    initializeAudioContext(): Promise<void>;
+    /**
+     * Create the input Opus decoder when the configured input format is 'opus'.
+     * No-op for PCM input. Idempotent. The decoder turns host-provided Ogg Opus
+     * into PCM16 for the local audio pipeline.
+     */
+    private ensureInputOpusDecoder;
+    /**
+     * Normalize host-provided audio into PCM16. If the SDK is configured for Opus
+     * input, decode the Ogg Opus bytes; otherwise pass PCM through untouched. All
+     * downstream code (playback buffer, byte/duration stats, upstream) then works
+     * on PCM exactly as before.
+     */
+    private normalizeInputAudioToPcm;
+    /**
+     * Start service (SDK mode only)
+     */
+    start(): Promise<void>;
+    /**
+     * Send audio to server (SDK mode only)
+     * Also cache to data layer for playback
+     * @returns conversationId - Conversation ID for this audio session
+     */
+    send(audioData: ArrayBuffer, end?: boolean): string | null;
+    /**
+     * Close service (SDK mode only)
+     */
+    close(): void;
+    /**
+     * Send audio data (host mode)
+     * Stream additional audio data after playback()
+     * @returns conversationId - Conversation ID for this audio session
+     */
+    yieldAudioData(data: Uint8Array, isLast?: boolean): string | null;
+    /**
+     * Send animation keyframes (host mode or SDK mode)
+     * Stream additional animation data after playback()
+     *
+     * Public API: accepts binary data array (protobuf encoded Message array)
+     * @param keyframesDataArray - Animation keyframes binary data array (each element is a protobuf encoded Message) or empty array to trigger audio-only mode
+     * @param conversationId - Conversation ID (required). If conversationId doesn't match current conversationId, keyframes will be discarded.
+     *                The conversationId is returned by yieldAudioData().
+     * @returns `true` if the server has sent all animation data for this conversation (end signal received), `false` otherwise.
+     */
+    yieldFramesData(keyframesDataArray: (Uint8Array | ArrayBuffer)[], conversationId: string): boolean;
+    /**
+     * Pause playback (can be resumed later)
+     * Pause audio playback and stop render loop, but preserve all state (keyframes, audio buffers, etc.)
+     */
+    pause(): void;
+    /**
+     * Resume playback (from paused state)
+     * Resume audio playback and restart render loop
+     * Animation will continue from paused frame (because animation time base comes from audio, will auto-sync)
+     */
+    resume(): Promise<void>;
+    /**
+     * Interrupt current playback
+     */
+    interrupt(): void;
+    /**
+     * The point count of current avatar, or null if avatar is not loaded.
+     */
+    get pointCount(): number | null;
+    /**
+     * Set audio playback volume
+     * Note: This only controls the avatar audio player volume, not the system volume
+     * @param volume Volume value, range from 0.0 to 1.0 (0.0 = mute, 1.0 = max volume)
+     */
+    setVolume(volume: number): void;
+    /**
+     * Get current audio playback volume
+     * @returns Current volume value (0.0 - 1.0)
+     */
+    getVolume(): number;
+    protected stopPlayback(): void;
+}

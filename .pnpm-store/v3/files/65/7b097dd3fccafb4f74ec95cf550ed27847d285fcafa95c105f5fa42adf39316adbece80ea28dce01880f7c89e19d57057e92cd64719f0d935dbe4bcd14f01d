@@ -1,0 +1,9 @@
+import { AvatarView } from './AvatarView';
+declare class AvatarViewRegistry {
+    private entries;
+    register(view: AvatarView): void;
+    unregister(view: AvatarView): void;
+    applyResolutionCapToAll(): void;
+}
+export declare const avatarViewRegistry: AvatarViewRegistry;
+export {};

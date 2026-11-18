@@ -1,0 +1,20 @@
+# @spatius/avatarkit
+
+Real-time virtual avatar rendering SDK for Web — audio-driven animation and high-quality 3D rendering.
+
+## Installation
+
+```bash
+npm install @spatius/avatarkit
+```
+
+## Documentation
+
+Full quickstart, API reference, and integration guides:
+
+**https://docs.spatius.ai/quickstarts/web-sdk**
+
+## Support
+
+- Email: hello@spatialwalk.net
+- Docs: https://docs.spatius.ai

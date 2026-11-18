@@ -1,0 +1,243 @@
+/**
+ * Unified public types & interfaces
+ */
+export declare enum DrivingServiceMode {
+    /** Driven by SDK directly */
+    direct = "direct",
+    /** Driven by host application */
+    backend = "backend",
+    /**
+     * Use this **only** when driving the avatar through the companion RTC SDK,
+     * `@spatius/avatarkit-rtc`. If you are not using that package, stay on
+     * `direct` / `backend` — do not switch to this because it looks newer.
+     *
+     * **Telemetry dimension only — it gates no behaviour.** Every session reports
+     * `dsm`; without a value of its own, RTC traffic would be indistinguishable
+     * from plain `backend` traffic on the dashboards.
+     *
+     * It deliberately does not unlock any API. RTC drives the avatar frame by
+     * frame through `AvatarView.renderFrame` / `renderFromProtobuf`, which put the
+     * view into pure-rendering mode on their own — it never calls the host-driven
+     * feeding path (`yieldAudioData` / `yieldFramesData`) that `backend` exists
+     * for. So the `=== backend` checks guarding those methods are left untouched:
+     * loosening them for `rtc` would widen the reachable API surface without
+     * enabling anything RTC actually uses.
+     *
+     * Note the two concepts sit at different levels and are not interchangeable:
+     * pure-rendering mode is a per-frame runtime state of the render loop, while
+     * this is a session-wide value declared once at `initialize`.
+     */
+    rtc = "rtc"
+}
+/**
+ * Strategy for handling animation-frame starvation (animation frames can't keep up
+ * with the audio clock).
+ *
+ * - `audioIndependent` (default): audio keeps playing, animation catches up; starvation
+ *   is only reported as telemetry. This is the historical default behavior.
+ * - `strictSync`: pause audio and wait when frames run out, resume once new frames
+ *   arrive, notifying via `AvatarController.onPlaybackStall`.
+ */
+export declare enum FrameStarvationMode {
+    audioIndependent = "audioIndependent",
+    strictSync = "strictSync"
+}
+export declare enum LogLevel {
+    /** Disable all logs */
+    off = "off",
+    /** Error logs only */
+    error = "error",
+    /** Warning and error logs */
+    warning = "warning",
+    /** All logs (info, warning, error), default value */
+    all = "all"
+}
+export interface AudioFormat {
+    /** Channel count, fixed to 1 (mono) */
+    readonly channelCount: 1;
+    /** Sample rate, supported: 8000, 16000, 22050, 24000, 32000, 44100, 48000, default: 16000 */
+    readonly sampleRate: number;
+    /**
+     * Opus target bitrate in bits/sec, used when the SDK encodes the upstream to Opus.
+     * Defaults to 48000. Higher = better quality but more upload; tune against the
+     * bandwidth/quality tradeoff for your content.
+     */
+    readonly opusBitrate?: number;
+    /**
+     * Whether the SDK may compress the direct-mode uplink as Opus. Default false —
+     * the uplink is raw PCM unless you opt in.
+     *
+     * Opus cuts the upload to roughly an eighth, at the cost of encoding on the
+     * client. **On by default** — the uplink drops to roughly 1/8 the bytes, which
+     * matters most on the mobile networks where playback stalls actually happen.
+     * Set it to `false` to keep the raw PCM uplink (e.g. on low-end devices where
+     * the encode cost is not worth the bandwidth saved).
+     *
+     * Only effective in direct mode: host mode has no uplink, and Opus input is
+     * already Opus so there is nothing to encode. Independent of
+     * `inputAudioFormat`, which describes what the host feeds in.
+     *
+     * Falls back to a raw PCM uplink (with a warning) when `sampleRate` is not one
+     * of Opus's supported rates — see `AvatarSDK.initialize`.
+     */
+    readonly opusUplinkEnabled?: boolean;
+    /**
+     * Format of the audio the host feeds INTO the SDK (via `send` / `yieldAudioData`).
+     * Fixed at SDK initialization for the whole session; do not change it per call.
+     *
+     * - 'pcm' (default): the host provides raw PCM16 mono.
+     * - 'opus': the host provides Opus. The SDK decodes it back to PCM16 for local
+     *   playback. Independent of the SDK's own upstream format to the driving
+     *   service, which the SDK decides internally.
+     *
+     * Under 'opus', the SDK accepts either shape that TTS providers hand out, and
+     * tells them apart from the bytes — it is not declared separately:
+     *
+     * - **Ogg Opus**, as file-style APIs return it (Azure
+     *   `ogg-48khz-16bit-mono-opus`, Google `OGG_OPUS`). Any chunk boundary is fine.
+     * - **Bare Opus packets, ONE PER CALL**, as streaming APIs push them over a
+     *   WebSocket. The SDK wraps these into Ogg for you. They cannot be batched: an
+     *   Opus packet carries no length of its own, so several concatenated into one
+     *   buffer have no recoverable boundaries.
+     *
+     * Requirements, all reported via `onError` with
+     * {@link ErrorCode.invalidAudioInput} rather than failing silently:
+     *
+     * - **Mono only.** The driving service's lip-sync model consumes mono; request
+     *   it from your provider rather than relying on a downmix.
+     * - **One shape per conversation.** Do not switch between Ogg and bare packets
+     *   mid-round.
+     * - **Ogg or bare packets only.** WebM, MP4, WAV and CAF are not demuxed, even
+     *   when the Opus inside them would be valid.
+     *
+     * The configured {@link sampleRate} does not apply: Opus always decodes at
+     * 48 kHz, and the SDK reports that rate for the session.
+     */
+    readonly inputAudioFormat?: 'pcm' | 'opus';
+}
+export declare enum RenderQuality {
+    standard = "standard",
+    high = "high",
+    ultra = "ultra"
+}
+export interface Configuration {
+    /** Region used to compose endpoint URLs (default 'us-west'). Not part of the public quickstart. */
+    readonly region?: string;
+    /** Driving service mode, default is direct */
+    readonly drivingServiceMode?: DrivingServiceMode;
+    /** Log level, default is off */
+    readonly logLevel?: LogLevel;
+    /** Audio format configuration, default is { channelCount: 1, sampleRate: 16000 } */
+    readonly audioFormat?: AudioFormat;
+    /** Custom endpoint overriding the region-derived host for both character API and driving WebSocket. */
+    readonly customEndpoint?: string;
+    /** Render quality tier, default is RenderQuality.ultra */
+    readonly renderQuality?: RenderQuality;
+}
+export declare enum LoadProgress {
+    downloading = "downloading",
+    completed = "completed",
+    failed = "failed"
+}
+export interface LoadProgressInfo {
+    type: LoadProgress;
+    progress?: number;
+    error?: Error;
+}
+export declare enum ConnectionState {
+    disconnected = "disconnected",
+    connecting = "connecting",
+    connected = "connected",
+    failed = "failed"
+}
+export declare enum AnimationType {
+    idle = "idle",
+    mono = "mono"
+}
+export declare enum TransitionType {
+    none = "none",
+    linear = "linear",
+    bezier = "bezier"
+}
+export declare enum ConversationState {
+    /** Idle state (breathing animation) */
+    idle = "idle",
+    /** Playing state */
+    playing = "playing",
+    /** Paused state */
+    paused = "paused"
+}
+export declare enum ErrorCode {
+    /** AppID not recognized (reserved, future appID validation logic) */
+    appIDUnrecognized = "appIDUnrecognized",
+    /** Session Token invalid (WebSocket close code 4010) */
+    sessionTokenInvalid = "sessionTokenInvalid",
+    /** Session Token expired (WebSocket close code 4010) */
+    sessionTokenExpired = "sessionTokenExpired",
+    /** Insufficient balance (WebSocket close code 4001) */
+    insufficientBalance = "insufficientBalance",
+    /** Concurrent connection limit exceeded (WebSocket close code 4003) */
+    concurrentLimitExceeded = "concurrentLimitExceeded",
+    /** AvatarID not recognized */
+    avatarIDUnrecognized = "avatarIDUnrecognized",
+    /** Failed to fetch avatar metadata */
+    failedToFetchAvatarMetadata = "failedToFetchAvatarMetadata",
+    /** Avatar metadata format invalid / failed to parse */
+    invalidAvatarMetadata = "invalidAvatarMetadata",
+    /** Failed to download avatar assets */
+    failedToDownloadAvatarAssets = "failedToDownloadAvatarAssets",
+    /** Avatar asset compatibility_flags not supported by this SDK version (upgrade SDK) */
+    unsupportedAvatarAsset = "unsupportedAvatarAsset",
+    /** WebSocket connection error (handshake failure, network error) */
+    websocketError = "websocketError",
+    /** WebSocket connection closed abnormally (close code 1006) */
+    websocketClosedAbnormally = "websocketClosedAbnormally",
+    /** WebSocket closed with unexpected close code */
+    websocketClosedUnexpected = "websocketClosedUnexpected",
+    /** Session timeout (WebSocket close code 4002) */
+    sessionTimeout = "sessionTimeout",
+    /** Connection already in progress */
+    connectionInProgress = "connectionInProgress",
+    /** Network layer not available (SDK mode required) */
+    networkLayerNotAvailable = "networkLayerNotAvailable",
+    /** Failed to start playback */
+    playbackStartFailed = "playbackStartFailed",
+    /** Playback initialization failed */
+    playbackInitFailed = "playbackInitFailed",
+    /** Audio-only playback initialization failed */
+    audioOnlyInitFailed = "audioOnlyInitFailed",
+    /** No audio data to play */
+    noAudio = "noAudio",
+    /**
+     * Audio handed to the SDK does not match `audioFormat.inputAudioFormat`.
+     * Raised for Opus input that is neither Ogg Opus nor a bare Opus packet
+     * (e.g. WebM or MP4, which the SDK does not demux), is stereo, or switches
+     * shape mid-conversation. The error message names the specific problem.
+     */
+    invalidAudioInput = "invalidAudioInput",
+    /** Audio context not initialized */
+    audioContextNotInitialized = "audioContextNotInitialized",
+    /** Animation player not initialized */
+    animationPlayerNotInitialized = "animationPlayerNotInitialized",
+    /** Server-side error */
+    serverError = "serverError"
+}
+export declare class AvatarError extends Error {
+    code: ErrorCode;
+    constructor(message: string, code: ErrorCode);
+}
+export interface CameraConfig {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
+    near: number;
+    far: number;
+    up?: [number, number, number];
+    aspect?: number;
+}
+export interface CharacterInfo {
+    pointCount: number;
+    hasAnimation: boolean;
+}
+export * from './character';
+export type { FrameRateInfo, FrameRenderInfo } from '../performance/FrameRateMonitor';
